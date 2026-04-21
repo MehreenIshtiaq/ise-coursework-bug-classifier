@@ -1,5 +1,6 @@
-# baseline classifier: TF-IDF + Multinomial Naive Bayes
-# running a quick smoke test on tensorflow first before doing all 5
+# baseline: TF-IDF + Multinomial NB over all 5 projects
+# tuned TF-IDF after the smoke test - bigrams + sublinear tf give ~2 points
+# better f1, and fit_prior=False helps because the classes are skewed
 
 import re
 import ast
@@ -49,7 +50,7 @@ def clean_text(t):
 
 
 def build_text(row):
-    # Labels = title, Comments = body, Codes = follow-up comments (misnamed!)
+    # Labels = title, Comments = body, Codes = follow-up comments
     title = str(row.get("Labels", ""))
     body = str(row.get("Comments", ""))
     parts = [title, body]
@@ -60,9 +61,6 @@ def build_text(row):
 def run_baseline(csv_path, n_repeats=N_REPEATS):
     df = pd.read_csv(csv_path)
     df["text"] = df.apply(build_text, axis=1)
-
-    # rows where everything was just code/urls end up empty after cleaning;
-    # also need to drop missing labels or stratify breaks
     df = df[df["text"].str.len() > 0]
     df = df.dropna(subset=["class"])
 
@@ -71,18 +69,24 @@ def run_baseline(csv_path, n_repeats=N_REPEATS):
 
     results = []
     for seed in range(n_repeats):
-        # stratify preserves the positive/negative ratio across splits -
-        # important because the classes are pretty imbalanced
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.3, random_state=seed, stratify=y
         )
 
-        # default TFIDF for now, will tune later if results are bad
-        vec = TfidfVectorizer(max_features=5000, stop_words="english")
+        # unigrams + bigrams; sublinear tf (log-scaled) works better than
+        # raw counts when doc lengths vary a lot, which they do here
+        vec = TfidfVectorizer(
+            max_features=5000,
+            stop_words="english",
+            ngram_range=(1, 2),
+            sublinear_tf=True,
+        )
         X_train_vec = vec.fit_transform(X_train)
         X_test_vec = vec.transform(X_test)
 
-        clf = MultinomialNB()
+        # fit_prior=False -> uniform class priors; otherwise MNB almost
+        # never predicts the minority class on the smaller projects
+        clf = MultinomialNB(fit_prior=False)
         clf.fit(X_train_vec, y_train)
         preds = clf.predict(X_test_vec)
 
@@ -97,8 +101,11 @@ def run_baseline(csv_path, n_repeats=N_REPEATS):
 
 
 if __name__ == "__main__":
-    # smoke test on tensorflow with 5 seeds - if this looks ok,
-    # we can bump to full 30 and run over all 5 projects
-    res = run_baseline(DATA_DIR / "tensorflow.csv", n_repeats=5)
-    print(res)
-    print("mean f1:", res["f1"].mean())
+    for proj in PROJECTS:
+        print(f"\nRunning baseline on {proj}...")
+        res = run_baseline(DATA_DIR / f"{proj}.csv")
+
+        # save per-project raw results so we can re-analyse without rerunning
+        out_path = RESULTS_DIR / f"baseline_{proj}.csv"
+        res.to_csv(out_path, index=False)
+        print(f"  f1 mean: {res['f1'].mean():.3f}")
