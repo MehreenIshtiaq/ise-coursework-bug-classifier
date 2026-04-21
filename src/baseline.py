@@ -16,7 +16,6 @@ N_REPEATS = 30
 
 
 def safe_list(x):
-    # "Codes" is stored as a stringified list, use literal_eval
     if pd.isna(x) or x == "" or x == "[]":
         return []
     try:
@@ -29,30 +28,38 @@ def safe_list(x):
 
 
 def clean_text(t):
-    # tried nltk.word_tokenize first but it was really slow on the
-    # larger datasets (tensorflow especially), falling back to regex
-
     if pd.isna(t):
         t = ""
     else:
         t = str(t)
 
-    # order matters: kill fenced code blocks BEFORE stripping backticks,
-    # otherwise the regex chews up the fence markers and leaves the code
+    # strip fenced code blocks first, then inline backticks, then urls
     t = re.sub(r"```.*?```", " ", t, flags=re.S)
     t = re.sub(r"`[^`]*`", " ", t)
-
-    # urls and @mentions aren't useful features, drop them
     t = re.sub(r"http\S+", " ", t)
     t = re.sub(r"@\w+", " ", t)
-
-    # everything non-alphanumeric -> space, then collapse whitespace
     t = re.sub(r"[^a-zA-Z0-9\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t.lower()
 
 
+def build_text(row):
+    # heads up: the column names in this dataset are confusing.
+    # "Labels" is actually the issue TITLE (not the classification label -
+    # that's in "class"), and "Comments" is the issue BODY. "Codes" holds
+    # follow-up comment text. Took me a good hour to realise I was training
+    # on the wrong field.
+    title = str(row.get("Labels", ""))
+    body = str(row.get("Comments", ""))
+
+    parts = [title, body]
+    parts.extend(safe_list(row.get("Codes", "[]")))
+    return clean_text(" ".join(parts))
+
+
 if __name__ == "__main__":
     for proj in PROJECTS:
         df = pd.read_csv(DATA_DIR / f"{proj}.csv")
-        print(proj, len(df))
+        df["text"] = df.apply(build_text, axis=1)
+        
+        print(proj, len(df), "sample:", df["text"].iloc[0][:80])
