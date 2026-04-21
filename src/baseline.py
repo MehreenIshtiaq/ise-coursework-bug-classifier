@@ -1,6 +1,5 @@
 # baseline: TF-IDF + Multinomial NB over all 5 projects
-# tuned TF-IDF after the smoke test - bigrams + sublinear tf give ~2 points
-# better f1, and fit_prior=False helps because the classes are skewed
+# reports precision / recall / f1 averaged over 30 seeds per project
 
 import re
 import ast
@@ -23,6 +22,7 @@ N_REPEATS = 30
 
 
 def safe_list(x):
+    # Codes column stores stringified python lists, literal_eval them
     if pd.isna(x) or x == "" or x == "[]":
         return []
     try:
@@ -40,6 +40,7 @@ def clean_text(t):
     else:
         t = str(t)
 
+    # order matters - strip code fences before backticks
     t = re.sub(r"```.*?```", " ", t, flags=re.S)
     t = re.sub(r"`[^`]*`", " ", t)
     t = re.sub(r"http\S+", " ", t)
@@ -50,7 +51,7 @@ def clean_text(t):
 
 
 def build_text(row):
-    # Labels = title, Comments = body, Codes = follow-up comments
+    # Labels = title, Comments = body, Codes = follow-up comments (yes, really)
     title = str(row.get("Labels", ""))
     body = str(row.get("Comments", ""))
     parts = [title, body]
@@ -73,8 +74,6 @@ def run_baseline(csv_path, n_repeats=N_REPEATS):
             X, y, test_size=0.3, random_state=seed, stratify=y
         )
 
-        # unigrams + bigrams; sublinear tf (log-scaled) works better than
-        # raw counts when doc lengths vary a lot, which they do here
         vec = TfidfVectorizer(
             max_features=5000,
             stop_words="english",
@@ -84,28 +83,58 @@ def run_baseline(csv_path, n_repeats=N_REPEATS):
         X_train_vec = vec.fit_transform(X_train)
         X_test_vec = vec.transform(X_test)
 
-        # fit_prior=False -> uniform class priors; otherwise MNB almost
-        # never predicts the minority class on the smaller projects
         clf = MultinomialNB(fit_prior=False)
         clf.fit(X_train_vec, y_train)
         preds = clf.predict(X_test_vec)
 
+        p = precision_score(y_test, preds, zero_division=0)
+        r = recall_score(y_test, preds, zero_division=0)
+        f = f1_score(y_test, preds, zero_division=0)
+        # on mxnet/caffe I had a run where precision=0, recall=0, f1=0
+        # because the model predicted all-negative. tracking n_pred_pos
+        # makes that obvious in the per-seed output
+        n_pos = int((preds == 1).sum())
+
         results.append({
             "seed": seed,
-            "precision": precision_score(y_test, preds, zero_division=0),
-            "recall": recall_score(y_test, preds, zero_division=0),
-            "f1": f1_score(y_test, preds, zero_division=0),
+            "precision": p,
+            "recall": r,
+            "f1": f,
+            "n_pred_pos": n_pos,
         })
 
     return pd.DataFrame(results)
 
 
 if __name__ == "__main__":
+    summary_rows = []
+
     for proj in PROJECTS:
         print(f"\nRunning baseline on {proj}...")
         res = run_baseline(DATA_DIR / f"{proj}.csv")
 
-        # save per-project raw results so we can re-analyse without rerunning
         out_path = RESULTS_DIR / f"baseline_{proj}.csv"
         res.to_csv(out_path, index=False)
-        print(f"  f1 mean: {res['f1'].mean():.3f}")
+
+        p_mean = res["precision"].mean()
+        r_mean = res["recall"].mean()
+        f_mean = res["f1"].mean()
+        f_std = res["f1"].std()
+        avg_pred = res["n_pred_pos"].mean()
+
+        print(f"  precision: {p_mean:.3f}")
+        print(f"  recall: {r_mean:.3f}")
+        print(f"  f1: {f_mean:.3f} (std {f_std:.3f})")
+        print(f"  avg predicted positives per run: {avg_pred:.1f}")
+
+        summary_rows.append({
+            "project": proj,
+            "precision": p_mean,
+            "recall": r_mean,
+            "f1": f_mean,
+            "f1_std": f_std,
+        })
+
+    # final summary table - this is what goes into the report
+    print("\n=== BASELINE SUMMARY ===")
+    print(pd.DataFrame(summary_rows).to_string(index=False))
