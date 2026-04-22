@@ -1,5 +1,5 @@
 # proposed method: word+char TFIDF -> SMOTE -> Logistic Regression
-# smoke testing on tensorflow first before running all 5 projects
+# running over all 5 projects and saving per-project csvs
 
 import re
 import ast
@@ -59,7 +59,6 @@ def build_text(row):
 
 
 def build_features():
-    # word bigrams + char n-grams - see commit message for reasoning
     word_vec = TfidfVectorizer(
         ngram_range=(1, 2),
         max_features=5000,
@@ -84,8 +83,6 @@ def run_proposed(csv_path, n_repeats=N_REPEATS):
 
     rows = []
     for seed in range(n_repeats):
-        # same seeds as baseline -> matched splits, so the comparison
-        # is genuinely apples-to-apples per run
         X_tr, X_te, y_tr, y_te = train_test_split(
             X, y, test_size=0.3, random_state=seed, stratify=y
         )
@@ -94,16 +91,11 @@ def run_proposed(csv_path, n_repeats=N_REPEATS):
         X_tr_v = features.fit_transform(X_tr)
         X_te_v = features.transform(X_te)
 
-        # SMOTE: k_neighbors must be < #minority samples or it raises.
-        # caffe has very few positives, so cap k = min(5, n_pos - 1).
-        # n_pos < 2 would still break - add max(1, ...) as a guard.
         n_pos = int((y_tr == 1).sum())
         k = max(1, min(5, n_pos - 1))
         sm = SMOTE(random_state=seed, k_neighbors=k)
         X_tr_s, y_tr_s = sm.fit_resample(X_tr_v, y_tr)
 
-        # class_weight='balanced' on top of SMOTE feels like belt and
-        # braces but it stabilised recall on the small projects
         clf = LogisticRegression(
             class_weight="balanced",
             max_iter=2000,
@@ -124,7 +116,9 @@ def run_proposed(csv_path, n_repeats=N_REPEATS):
 
 
 if __name__ == "__main__":
-    # smoke test: 5 seeds on tensorflow before committing to full run
-    res = run_proposed(DATA_DIR / "tensorflow.csv", n_repeats=5)
-    print(res)
-    print("mean f1:", res["f1"].mean())
+    for proj in PROJECTS:
+        print(f"\nRunning proposed method on {proj}...")
+        res = run_proposed(DATA_DIR / f"{proj}.csv")
+        out_path = RESULTS_DIR / f"proposed_{proj}.csv"
+        res.to_csv(out_path, index=False)
+        print(f"  f1 mean: {res['f1'].mean():.3f}")
