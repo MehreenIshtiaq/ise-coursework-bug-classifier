@@ -14,8 +14,6 @@ METRICS = ["precision", "recall", "f1"]
 
 
 def vargha_delaney_a12(x, y):
-    # P(random value from x > random value from y), ties count 0.5.
-    # Effect-size counterpart to wilcoxon: 0.5 = no effect, >0.5 = x wins.
     x = np.asarray(x)
     y = np.asarray(y)
     n_pairs = len(x) * len(y)
@@ -25,7 +23,6 @@ def vargha_delaney_a12(x, y):
 
 
 def interpret_a12(a):
-    # thresholds from Vargha & Delaney (2000) - what the assignment references
     if a < 0.5:
         return "worse"
     if a < 0.56:
@@ -38,6 +35,21 @@ def interpret_a12(a):
 
 
 if __name__ == "__main__":
-    # sanity check the helpers before hooking them into the main loop
-    print("a12([1,2,3], [0,0,0]) =", vargha_delaney_a12([1, 2, 3], [0, 0, 0]))
-    print("interpret_a12(0.85) =", interpret_a12(0.85))
+    # first pass: just print means +/- stds side by side so I can
+    # eyeball whether the proposed method is actually winning.
+    # stat tests + csv export go in once I trust the numbers.
+    print("=" * 95)
+    print(f"{'Project':<12} {'Metric':<10} {'Baseline (mean±std)':<22} "
+          f"{'Proposed (mean±std)':<22}")
+    print("=" * 95)
+
+    for proj in PROJECTS:
+        base = pd.read_csv(RESULTS_DIR / f"baseline_{proj}.csv")
+        prop = pd.read_csv(RESULTS_DIR / f"proposed_{proj}.csv")
+        for m in METRICS:
+            b = base[m].values
+            p = prop[m].values
+            print(f"{proj:<12} {m:<10} "
+                  f"{b.mean():.3f} ± {b.std():.3f}     "
+                  f"{p.mean():.3f} ± {p.std():.3f}")
+        print("-" * 95)
