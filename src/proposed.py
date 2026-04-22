@@ -1,12 +1,18 @@
-# proposed method for the bug classifier
+# proposed method: word+char TFIDF -> SMOTE -> Logistic Regression
+# smoke testing on tensorflow first before running all 5 projects
 
 import re
 import ast
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import FeatureUnion
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_score, recall_score, f1_score
+from imblearn.over_sampling import SMOTE
 
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -53,10 +59,7 @@ def build_text(row):
 
 
 def build_features():
-    # word bigrams catch phrases like "out of memory" or "segmentation fault".
-    # char n-grams (3-5, char_wb) catch weird identifier-like tokens that the
-    # word tokenizer treats as one chunk - e.g. "cuda_oom", "conv2d", "nan_loss".
-    # these subword signals seem to matter a lot for GPU framework bugs.
+    # word bigrams + char n-grams - see commit message for reasoning
     word_vec = TfidfVectorizer(
         ngram_range=(1, 2),
         max_features=5000,
@@ -72,12 +75,56 @@ def build_features():
     return FeatureUnion([("word", word_vec), ("char", char_vec)])
 
 
-if __name__ == "__main__":
-    # quick check: fit feature union and see the combined dim
-    df = pd.read_csv(DATA_DIR / "tensorflow.csv")
+def run_proposed(csv_path, n_repeats=N_REPEATS):
+    df = pd.read_csv(csv_path)
     df["text"] = df.apply(build_text, axis=1)
-    df = df[df["text"].str.len() > 0]
+    df = df[df["text"].str.len() > 0].dropna(subset=["class"])
+    X = df["text"].values
+    y = df["class"].astype(int).values
 
-    features = build_features()
-    X = features.fit_transform(df["text"].values)
-    print("feature matrix shape:", X.shape)
+    rows = []
+    for seed in range(n_repeats):
+        # same seeds as baseline -> matched splits, so the comparison
+        # is genuinely apples-to-apples per run
+        X_tr, X_te, y_tr, y_te = train_test_split(
+            X, y, test_size=0.3, random_state=seed, stratify=y
+        )
+
+        features = build_features()
+        X_tr_v = features.fit_transform(X_tr)
+        X_te_v = features.transform(X_te)
+
+        # SMOTE: k_neighbors must be < #minority samples or it raises.
+        # caffe has very few positives, so cap k = min(5, n_pos - 1).
+        # n_pos < 2 would still break - add max(1, ...) as a guard.
+        n_pos = int((y_tr == 1).sum())
+        k = max(1, min(5, n_pos - 1))
+        sm = SMOTE(random_state=seed, k_neighbors=k)
+        X_tr_s, y_tr_s = sm.fit_resample(X_tr_v, y_tr)
+
+        # class_weight='balanced' on top of SMOTE feels like belt and
+        # braces but it stabilised recall on the small projects
+        clf = LogisticRegression(
+            class_weight="balanced",
+            max_iter=2000,
+            C=1.0,
+            solver="liblinear",
+        )
+        clf.fit(X_tr_s, y_tr_s)
+        pred = clf.predict(X_te_v)
+
+        rows.append({
+            "seed": seed,
+            "precision": precision_score(y_te, pred, zero_division=0),
+            "recall": recall_score(y_te, pred, zero_division=0),
+            "f1": f1_score(y_te, pred, zero_division=0),
+        })
+
+    return pd.DataFrame(rows)
+
+
+if __name__ == "__main__":
+    # smoke test: 5 seeds on tensorflow before committing to full run
+    res = run_proposed(DATA_DIR / "tensorflow.csv", n_repeats=5)
+    print(res)
+    print("mean f1:", res["f1"].mean())
