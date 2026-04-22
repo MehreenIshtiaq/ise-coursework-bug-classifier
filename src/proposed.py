@@ -1,12 +1,12 @@
 # proposed method for the bug classifier
-# reusing baseline preprocessing so the only thing being compared
-# downstream is the classifier, not the text features
 
 import re
 import ast
 from pathlib import Path
 
 import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import FeatureUnion
 
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -17,9 +17,6 @@ PROJECTS = ["tensorflow", "pytorch", "keras", "mxnet", "caffe"]
 N_REPEATS = 30
 
 
-# NOTE: these three helpers are copies of the baseline's. Keeping them
-# duplicated (rather than importing) so each script runs standalone -
-# the marker might want to run them in isolation.
 def safe_list(x):
     if pd.isna(x) or x == "" or x == "[]":
         return []
@@ -55,8 +52,32 @@ def build_text(row):
     return clean_text(" ".join(parts))
 
 
+def build_features():
+    # word bigrams catch phrases like "out of memory" or "segmentation fault".
+    # char n-grams (3-5, char_wb) catch weird identifier-like tokens that the
+    # word tokenizer treats as one chunk - e.g. "cuda_oom", "conv2d", "nan_loss".
+    # these subword signals seem to matter a lot for GPU framework bugs.
+    word_vec = TfidfVectorizer(
+        ngram_range=(1, 2),
+        max_features=5000,
+        stop_words="english",
+        sublinear_tf=True,
+    )
+    char_vec = TfidfVectorizer(
+        analyzer="char_wb",
+        ngram_range=(3, 5),
+        max_features=5000,
+        sublinear_tf=True,
+    )
+    return FeatureUnion([("word", word_vec), ("char", char_vec)])
+
+
 if __name__ == "__main__":
-    # just making sure the preprocessing runs end to end
+    # quick check: fit feature union and see the combined dim
     df = pd.read_csv(DATA_DIR / "tensorflow.csv")
     df["text"] = df.apply(build_text, axis=1)
-    print(df["text"].iloc[0][:100])
+    df = df[df["text"].str.len() > 0]
+
+    features = build_features()
+    X = features.fit_transform(df["text"].values)
+    print("feature matrix shape:", X.shape)
