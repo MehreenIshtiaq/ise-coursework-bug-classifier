@@ -1,5 +1,5 @@
 # proposed method: word+char TFIDF -> SMOTE -> Logistic Regression
-# running over all 5 projects and saving per-project csvs
+# final version with summary table + pred-positive sanity check
 
 import re
 import ast
@@ -59,6 +59,8 @@ def build_text(row):
 
 
 def build_features():
+    # word bigrams + char n-grams; char_wb because token-internal chars
+    # in things like cuda_oom / conv2d carry real signal
     word_vec = TfidfVectorizer(
         ngram_range=(1, 2),
         max_features=5000,
@@ -91,6 +93,7 @@ def run_proposed(csv_path, n_repeats=N_REPEATS):
         X_tr_v = features.fit_transform(X_tr)
         X_te_v = features.transform(X_te)
 
+        # SMOTE k_neighbors guard - minority class can be tiny
         n_pos = int((y_tr == 1).sum())
         k = max(1, min(5, n_pos - 1))
         sm = SMOTE(random_state=seed, k_neighbors=k)
@@ -110,15 +113,40 @@ def run_proposed(csv_path, n_repeats=N_REPEATS):
             "precision": precision_score(y_te, pred, zero_division=0),
             "recall": recall_score(y_te, pred, zero_division=0),
             "f1": f1_score(y_te, pred, zero_division=0),
+            # keep this - makes it obvious when the model predicts all-negative
+            "n_pred_pos": int((pred == 1).sum()),
         })
 
     return pd.DataFrame(rows)
 
 
 if __name__ == "__main__":
+    summary = []
+
     for proj in PROJECTS:
         print(f"\nRunning proposed method on {proj}...")
-        res = run_proposed(DATA_DIR / f"{proj}.csv")
+        results = run_proposed(DATA_DIR / f"{proj}.csv")
         out_path = RESULTS_DIR / f"proposed_{proj}.csv"
-        res.to_csv(out_path, index=False)
-        print(f"  f1 mean: {res['f1'].mean():.3f}")
+        results.to_csv(out_path, index=False)
+
+        p_mean = results["precision"].mean()
+        r_mean = results["recall"].mean()
+        f_mean = results["f1"].mean()
+        f_std = results["f1"].std()
+        avg_pred = results["n_pred_pos"].mean()
+
+        print(f"  precision: {p_mean:.3f}")
+        print(f"  recall: {r_mean:.3f}")
+        print(f"  f1: {f_mean:.3f} (std {f_std:.3f})")
+        print(f"  avg predicted positives per run: {avg_pred:.1f}")
+
+        summary.append({
+            "project": proj,
+            "precision": p_mean,
+            "recall": r_mean,
+            "f1": f_mean,
+            "f1_std": f_std,
+        })
+
+    print("\n=== PROPOSED METHOD SUMMARY ===")
+    print(pd.DataFrame(summary).to_string(index=False))
