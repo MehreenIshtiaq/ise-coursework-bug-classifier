@@ -9,7 +9,6 @@ from scipy.stats import wilcoxon
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 FIGURES_DIR = Path(__file__).parent.parent / "figures"
 FIGURES_DIR.mkdir(exist_ok=True)
